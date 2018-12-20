@@ -1,0 +1,401 @@
+/* * File: final_project.c 
+* * Created on March 6, 2018, 10:42 AM 
+*/ 
+#include <xc.h> 
+#include <stdio.h> 
+#include <stdlib.h> 
+#include <stdbool.h> 
+#include <stddef.h> 
+#include <stdint.h> 
+#include<string.h> 
+#include <math.h> 
+#include "i2c.h" 
+#include "i2c_LCD.h" 
+
+// CONFIG1 
+#pragma config FOSC = INTOSC // Oscillator Selection (INTOSC oscillator: I/O function on CLKIN pin) 
+#pragma config WDTE = OFF // Watchdog Timer Enable (WDT disabled) 
+#pragma config PWRTE = OFF // Power-up Timer Enable (PWRT disabled) 
+#pragma config MCLRE = ON // MCLR Pin Function Select (MCLR/VPP pin function is MCLR) 
+#pragma config CP = OFF // Flash Program Memory Code Protection (Program memory code protection is disabled) 
+#pragma config CPD = OFF // Data Memory Code Protection (Data memory code protection is disabled) 
+#pragma config BOREN = OFF // Brown-out Reset Enable (Brown-out Reset enabled) 
+#pragma config CLKOUTEN = OFF // Clock Out Enable (CLKOUT function is disabled. I/O or oscillator function on the CLKOUT pin) 
+#pragma config IESO = OFF // Internal/External Switchover (Internal/External Switchover mode is disabled) 
+#pragma config FCMEN = OFF // Fail-Safe Clock Monitor Enable (Fail-Safe Clock Monitor is disabled) 
+
+// CONFIG2 
+#pragma config WRT = OFF // Flash Memory Self-Write Protection (Write protection off) 
+#pragma config PLLEN = OFF // PLL Enable (4x PLL disabled) 
+#pragma config STVREN = ON // Stack Overflow/Underflow Reset Enable (Stack Overflow or Underflow will cause a Reset) 
+#pragma config BORV = LO // Brown-out Reset Voltage Selection (Brown-out Reset Voltage (Vbor), low trip point selected.) 
+#pragma config LVP = OFF // Low-Voltage Programming Enable (High-voltage on MCLR/VPP must be used for programming) 
+
+#define R1 PORTAbits.RA2 
+#define R2 PORTCbits.RC0 
+#define R3 PORTCbits.RC1 
+#define R4 PORTCbits.RC2 
+#define C1 PORTCbits.RC3 
+#define C2 PORTAbits.RA4 
+#define C3 PORTBbits.RB7 
+#define C4 PORTCbits.RC6 
+
+#define I2C_SLAVE1 0x27 /* was 1E Channel of i2c slave depends on soldering on back of board*/ 
+#define I2C_SLAVE2 0x68; 
+#define I2C_WRITE 0 
+#define I2C_READ 1 
+#define _XTAL_FREQ 1000000.0 
+
+//Prototypes 
+void I2C_LCD_Command(unsigned char,unsigned char); 
+void I2C_LCD_SWrite(unsigned char,unsigned char *, char); 
+void I2C_LCD_Init(unsigned char); 
+void I2C_LCD_Pos(unsigned char,unsigned char); 
+unsigned char I2C_LCD_Busy(unsigned char); 
+
+//Global variables 
+int rowpins[4]={0,0,0,0}; // connect each pin to the PIC 
+int colspins[4]={0,0,0,0}; 
+const int rows=4, cols=4; 
+int PWM_freq=50, g=0, TMR2PRESCALE=64; 
+
+//read from the keypad 
+int keypad_read_columns(){ 
+int colus; 
+
+bool f= 1; 
+//put columns as inputs and rows to outputs. 
+
+TRISC3 =1;//set columns to input 
+TRISA4=1; 
+TRISB7=1; 
+TRISC6=1; 
+TRISA2 =0;// set rows to outputs 
+TRISC0 =0; 
+TRISC1=0; 
+TRISC2=0; 
+R1=0;// set all rows to logic low 
+R2=0; 
+R3=0; 
+R4=0; 
+//enable weak pull_ups for the columns 
+WPUC3=1; 
+WPUA4=1; 
+WPUB7=1; 
+WPUC6=1; 
+
+while(f){ 
+
+for (int i=0; i<cols; i++){ 
+//go over all columns 
+colspins[0]=C1; 
+colspins[1]=C2; 
+colspins[2]=C3; 
+colspins[3]=C4; 
+if (colspins[i]==0){ 
+f=false; 
+colus=i; 
+break; 
+} } 
+} return colus; 
+}// end of keypad read columns 
+
+int keypad_read_rows(){ //read the row 
+
+// test for the rows 
+bool k= true; 
+int row; 
+TRISC3 =0;//set all columns to output 
+TRISA4=0; 
+TRISB7=0; 
+TRISC6=0; 
+TRISA2 =1;//set all rows to inputs 
+TRISC0 =1; 
+TRISC1=1; 
+TRISC2=1; 
+C1=0;// set all columns to logic low 
+C2=0; 
+C3=0; 
+C4=0; 
+//enable all rows pull_ups 
+WPUA2=1; 
+WPUC0=1; 
+WPUC1=1; 
+WPUC2=1; 
+while (k){ 
+
+for(int m=0;m<rows; m++){ 
+//goes over 4 bit of pressed columns 
+rowpins[0]=R1; 
+rowpins[1]=R2; 
+rowpins[2]=R3; 
+rowpins[3]=R4; 
+if (rowpins[m]==0){ 
+k=false; 
+row=m; 
+break; 
+
+} 
+
+} } return row; 
+} 
+
+void PWM_Initialize(){ 
+APFCON1 = 0x01; //Set PWM to alternative PIN RA5 (HELLO WORLD LED) 
+PR2 = 0b01001110; //PR2 value needed for 50Hz frequency 
+CCP2CON = 0x0C; //Enable pwm mode pg.238 
+CCPR2L = 0x00; //Set initial dutycycle to 0 
+CCPTMRS = 0x00; //Set TMR2 to work with PWM 
+PIR1 &= 0xFF; //Clear TMR 2 int flag 
+T2CON = 0x07; // 1:1 postscaler 64:1 prescaler on timer 2 
+
+} int PWM_duty(int ang){ 
+int duty; 
+switch(ang) 
+{ 
+case 0: 
+duty=5; 
+break; 
+case 1:case 2:case 3:case 4:case 5:case 6:case 7:case 8:case 9:case 10:case 11:case 12:case 13:case 14:case 15: 
+
+duty= 5; 
+break; 
+case 16: case 17 :case 18:case 19:case 20:case 21:case 22:case 23:case 24:case 25: case 26:case 27:case 28:case 29: 
+duty= 6; 
+break; 
+case 30: case 31:case 32:case 33:case 34:case 35:case 36:case 37:case 38:case 39:case 40:case 41:case 42:case 43:case 44: 
+
+duty =7; 
+break; 
+case 45:case 46:case 47:case 48:case 49:case 50:case 51:case 52:case 53:case 54:case 55:case 56:case 57:case 58:case 59: 
+
+duty= 8; 
+break; 
+case 60:case 61:case 62:case 63:case 64:case 65:case 66:case 67:case 68:case 69: 
+duty= 9; 
+break; 
+case 70:case 71:case 72:case 73:case 74:case 75:case 76:case 77:case 78:case 79: 
+duty= 10; 
+break; 
+case 80:case 81:case 82:case 83:case 84:case 85:case 86:case 87:case 88:case 89:case 90: 
+duty= 12; 
+break; 
+case 91:case 92:case 93:case 94:case 95:case 96:case 97:case 98:case 99:case 100:case 101:case 102:case 103:case 104:case 105:case 106:case 107:case 108:case 109: 
+duty= 13; 
+break; 
+case 111:case 112:case 113:case 114:case 115:case 116:case 117:case 118:case 119:case 110: 
+duty= 14; 
+break; 
+case 121:case 120 :case 122:case 123:case 124:case 125:case 126:case 127:case 128: 
+duty= 15; 
+break; 
+case 129:case 130:case 131:case 132:case 133:case 134:case 135: 
+duty= 16; 
+break; 
+case 136:case 137:case 138:case 139:case 140:case 141:case 142:case 143:case 144: 
+duty= 17; 
+break; 
+case 145:case 146:case 147:case 148:case 149:case 150: 
+duty= 18; 
+break; 
+case 151:case 152:case 153:case 154:case 155:case 156:case 157:case 158:case 159:case 160:case 161:case 162:case 163:case 164:case 165:case 166:case 167:case 168:case 169:case 170:case 171:case 172:case 173:case 174:case 175:case 176:case 177:case 178: 
+duty= 19; 
+break; 
+case 179:case 180: 
+duty=20; 
+break; 
+
+} 
+
+DC2B0 =duty & 1; //Store the 0th bit 
+DC2B1 =(duty & 2)>>1; //Store the 1st bit 
+CCPR2L =duty>>2; 
+// Store the remaining 8 bit //shifted right to delete lower 2 bits 
+
+return duty; 
+} 
+
+float Measure (){ 
+float d=0; 
+int duration2=0; 
+TRISC4=0;//set trig pin to output 
+TRISC5=1;//set RC5 to input 
+
+LATC |=0x10; 
+//RC4=1; // end the trigger pulse 
+__delay_us(2.5); 
+LATC &=0xEF; 
+//RC4=0; //end pulse 
+
+TMR1L=0; 
+TMR1H=0; 
+//wait for echo to go hi and start timer 
+while(RC5 == 0); //echo pin no echo is detected yet 
+TMR1ON=1; 
+while(RC5 == 1); 
+TMR1ON=0; 
+duration2 = (TMR1L|(TMR1H<<8)); 
+// duration2=(TMR1H<<8)+TMR1L; //reads timer value 
+d = (float)(duration2 / 7.35294); //14.70588 sounds travels at 29.155 microsecond per cm. 
+
+return d; 
+} 
+
+void clockAndpin_config(){ 
+INTCON = 0; // purpose of disabling the interrupts. 
+OPTION_REG = 0X45; // set up timer 1 
+TRISA = 0X00; 
+TRISC = 0X20;//RC5 ping echo 
+TRISB = 0x20;//push button 
+ANSELA = 0X00; 
+ANSELB = 0X00; 
+ANSELC = 0X00; 
+LATC =0x00; 
+} 
+
+void timer1_config(){ 
+TMR1ON = 0; 
+T1CON=0x04; //FOSC/4 1:1 prescaler 
+TMR1H = 0; 
+TMR1L = 0; 
+
+} 
+
+void main(void) { 
+
+/*Clock and Pin Configuration*/ 
+clockAndpin_config(); //Configures clock and pins, enables timers 
+int col,rw; 
+bool done=false; 
+char angl[4]="0000"; 
+float distance=0; 
+const char keys[4][4]={{'1','2','3','A'},{'4','5','6','B'},{'7','8','9','C'},{'*','0','#','D'}}; 
+int duty,angle; 
+unsigned char Sout[21],slaveAddress=0x68,sec,min,hrs; 
+unsigned char * Sptr; 
+Sptr = Sout; 
+
+/* initialize the PWM */ 
+PWM_Initialize(); 
+
+/*initialize LCD*/ 
+i2c_Init(); // Start I2C as Master 100KH 
+I2C_LCD_Init(I2C_SLAVE1); //pass I2C_SLAVE to the init function to create an instance 
+I2C_LCD_Command(I2C_SLAVE1, 0x01);//clear 
+
+//initialize the real time clock 
+//i2c_Start(); 
+//i2c_Address(slaveAddress, I2C_WRITE);//send slave address with write operation 
+//i2c_Write(0x00); //write to the register pointer 00h 
+//i2c_write(0x00);//sec 
+//i2c_write(0x26);//min 
+//i2c_write(0x16);//hrs+12/24 
+//i2c_write(0x02);//day 
+//i2c_write(0x01);//date 
+//i2c_write(0x04);//month 
+//i2c_write(0x13);//year 
+do 
+{ //read the pressed buttons 
+do{ 
+sprintf(Sout, "ENTER A VALID"); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 13); 
+I2C_LCD_Pos(I2C_SLAVE1,0x40); 
+sprintf(Sout, "ANGLE"); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 5); 
+while(!done){ 
+col=keypad_read_columns(); 
+rw=keypad_read_rows(); 
+__delay_ms(500); 
+if((*(*(keys+rw)+col))=='#') 
+{ 
+done=true; 
+} else { 
+*(angl+g)=*(*(keys+rw)+col); 
+g+=1; 
+} 
+} //put the angle in int 
+angle=atoi(angl); 
+I2C_LCD_Command(I2C_SLAVE1, 0x01);//clear 
+if(!RB5) RESET(); 
+__delay_ms(10); 
+}while(angle>180); 
+
+I2C_LCD_Pos(I2C_SLAVE1,0x00); 
+sprintf(Sout, "Angle entered is"); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 16); 
+I2C_LCD_Pos(I2C_SLAVE1,0x40); 
+if(angle<10){ 
+sprintf(Sout, " %d",angle); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 2); 
+} else if(angle<100){ 
+sprintf(Sout, " %d",angle); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 3); 
+} else 
+{ sprintf(Sout, " %d",angle); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 4); 
+} 
+
+//set the duty cycle 
+duty=PWM_duty(angle); 
+__delay_ms(1000);// wait for the servo to turn 
+I2C_LCD_Command(I2C_SLAVE1, 0x01);//clear 
+
+//measure the distance 
+timer1_config(); 
+distance=Measure(); 
+
+////read the real time 
+//i2c_Address(slaveAddress , I2C_READ); 
+//sec=i2c_READ(1); 
+//min=i2c_READ(1); 
+//hrs=i2c_READ(1); 
+//i2c_STOP(); 
+
+// displaying the result. 
+I2C_LCD_Pos(I2C_SLAVE1,0x00); 
+sprintf(Sout, "DISTANCE = "); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 11); 
+I2C_LCD_Pos(I2C_SLAVE1,0x40); 
+sprintf(Sout, "%3f",distance); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 8); 
+I2C_LCD_Pos(I2C_SLAVE1,0x48); 
+sprintf(Sout, " Cm"); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 3); 
+__delay_ms(1000); 
+I2C_LCD_Command(I2C_SLAVE1, 0x01);//clear 
+
+////display the time 
+//I2C_LCD_Pos(I2C_SLAVE2,0x00); 
+//sprintf(Sout, "%02x : %02x: %02x",hrs,min,sec); 
+//I2C_LCD_SWrite(I2C_SLAVE2, Sout, 10); 
+//__delay_ms(1000); 
+//I2C_LCD_Command(I2C_SLAVE2, 0x01);//clear 
+
+//test the distance and drive the buzzer 
+
+if(distance<=7){ //object too close 
+I2C_LCD_Pos(I2C_SLAVE1,0x00); 
+sprintf(Sout, "OBJECT TOO "); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 11); 
+I2C_LCD_Pos(I2C_SLAVE1,0x40); 
+sprintf(Sout, "CLOSE!"); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 6); 
+
+//drive the buzzer 
+
+RC7=0; 
+__delay_ms(500); 
+RC7=1; 
+} else 
+{ I2C_LCD_Command(I2C_SLAVE1, 0x01);//clear 
+I2C_LCD_Pos(I2C_SLAVE1,0x00); 
+sprintf(Sout, "OBJECT is "); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 10); 
+I2C_LCD_Pos(I2C_SLAVE1,0x40); 
+sprintf(Sout, "FAR!"); 
+I2C_LCD_SWrite(I2C_SLAVE1, Sout, 4); 
+} __delay_ms(1000); 
+
+RESET(); 
+}while(1); 
+} 
